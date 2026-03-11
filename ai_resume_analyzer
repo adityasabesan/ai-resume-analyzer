@@ -1,0 +1,258 @@
+import re
+import io
+import math
+from collections import Counter
+
+import streamlit as st
+from PyPDF2 import PdfReader
+from docx import Document
+
+# -----------------------------
+# PAGE CONFIG
+# -----------------------------
+st.set_page_config(page_title="AI Resume Analyzer", page_icon="📄", layout="wide")
+
+# -----------------------------
+# HELPER FUNCTIONS
+# -----------------------------
+STOPWORDS = {
+    "a", "an", "and", "the", "is", "are", "was", "were", "to", "for", "of", "in", "on", "with",
+    "at", "by", "from", "or", "as", "be", "this", "that", "it", "your", "you", "will", "can",
+    "have", "has", "had", "not", "but", "if", "their", "they", "we", "our", "us", "i", "me",
+    "my", "about", "into", "than", "then", "them", "he", "she", "his", "her"
+}
+
+COMMON_SKILLS = [
+    "python", "java", "c", "c++", "javascript", "typescript", "html", "css", "sql",
+    "machine learning", "deep learning", "nlp", "data analysis", "pandas", "numpy",
+    "matplotlib", "scikit-learn", "tensorflow", "pytorch", "streamlit", "flask",
+    "django", "react", "node.js", "mongodb", "mysql", "postgresql", "git", "github",
+    "excel", "power bi", "tableau", "aws", "azure", "docker", "kubernetes",
+    "linux", "opencv", "computer vision", "api", "rest api", "data structures",
+    "algorithms", "oop", "problem solving", "communication", "teamwork"
+]
+
+ACTION_VERBS = [
+    "developed", "built", "designed", "implemented", "optimized", "created", "led",
+    "improved", "analyzed", "automated", "tested", "deployed", "engineered", "managed",
+    "trained", "collaborated", "integrated", "streamlined"
+]
+
+def clean_text(text):
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9+#.\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def extract_text_from_pdf(uploaded_file):
+    try:
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+        return text
+    except Exception:
+        return ""
+
+def extract_text_from_docx(uploaded_file):
+    try:
+        doc = Document(uploaded_file)
+        return "\n".join([para.text for para in doc.paragraphs])
+    except Exception:
+        return ""
+
+def extract_text(uploaded_file):
+    file_name = uploaded_file.name.lower()
+
+    if file_name.endswith(".pdf"):
+        return extract_text_from_pdf(uploaded_file)
+    elif file_name.endswith(".docx"):
+        return extract_text_from_docx(uploaded_file)
+    elif file_name.endswith(".txt"):
+        return uploaded_file.read().decode("utf-8", errors="ignore")
+    return ""
+
+def tokenize(text):
+    text = clean_text(text)
+    words = text.split()
+    return [word for word in words if word not in STOPWORDS and len(word) > 2]
+
+def get_top_keywords(text, top_n=15):
+    words = tokenize(text)
+    freq = Counter(words)
+    return freq.most_common(top_n)
+
+def extract_skills(text):
+    text_clean = clean_text(text)
+    found_skills = []
+    for skill in COMMON_SKILLS:
+        if skill.lower() in text_clean:
+            found_skills.append(skill)
+    return sorted(list(set(found_skills)))
+
+def keyword_match_score(resume_text, jd_text):
+    resume_words = set(tokenize(resume_text))
+    jd_words = set(tokenize(jd_text))
+
+    if not jd_words:
+        return 0, [], []
+
+    matched = sorted(list(resume_words.intersection(jd_words)))
+    missing = sorted(list(jd_words - resume_words))
+
+    score = int((len(matched) / len(jd_words)) * 100)
+    return score, matched[:50], missing[:50]
+
+def detect_sections(resume_text):
+    text = resume_text.lower()
+    sections = {
+        "education": "education" in text,
+        "experience": "experience" in text or "internship" in text or "work history" in text,
+        "projects": "projects" in text or "project" in text,
+        "skills": "skills" in text or "technical skills" in text,
+        "certifications": "certification" in text or "certifications" in text,
+        "summary": "summary" in text or "profile" in text or "objective" in text
+    }
+    return sections
+
+def check_resume_quality(resume_text):
+    text = resume_text.lower()
+    suggestions = []
+
+    # Length check
+    word_count = len(text.split())
+    if word_count < 200:
+        suggestions.append("Your resume looks too short. Add more project details, internships, and achievements.")
+    elif word_count > 1000:
+        suggestions.append("Your resume may be too long. Try keeping it more concise and focused.")
+
+    # Email check
+    if not re.search(r'[\w\.-]+@[\w\.-]+\.\w+', resume_text):
+        suggestions.append("Add a professional email address.")
+
+    # Phone check
+    if not re.search(r'(\+?\d[\d\s\-]{8,})', resume_text):
+        suggestions.append("Add a phone number.")
+
+    # LinkedIn / GitHub check
+    if "linkedin" not in text:
+        suggestions.append("Add your LinkedIn profile.")
+    if "github" not in text:
+        suggestions.append("Add your GitHub profile.")
+
+    # Action verbs check
+    found_action_verbs = [verb for verb in ACTION_VERBS if verb in text]
+    if len(found_action_verbs) < 3:
+        suggestions.append("Use stronger action verbs like Developed, Built, Implemented, Optimized.")
+
+    # Numbers / impact check
+    if not re.search(r'\b\d+%|\b\d+\b', resume_text):
+        suggestions.append("Add measurable achievements using numbers, percentages, or counts.")
+
+    # Sections check
+    sections = detect_sections(resume_text)
+    for sec, present in sections.items():
+        if not present:
+            suggestions.append(f"Consider adding a {sec.title()} section.")
+
+    return suggestions
+
+def score_label(score):
+    if score >= 80:
+        return "Excellent Match ✅"
+    elif score >= 60:
+        return "Good Match 👍"
+    elif score >= 40:
+        return "Average Match ⚠️"
+    return "Low Match ❌"
+
+# -----------------------------
+# UI
+# -----------------------------
+st.title("📄 AI Resume Analyzer")
+st.markdown("Upload your resume and compare it with a job description to get an ATS-style analysis.")
+
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    uploaded_file = st.file_uploader("Upload Resume (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
+
+with col2:
+    jd_text = st.text_area("Paste Job Description", height=220, placeholder="Paste the job description here...")
+
+analyze = st.button("Analyze Resume")
+
+if analyze:
+    if not uploaded_file:
+        st.error("Please upload a resume file.")
+    elif not jd_text.strip():
+        st.error("Please paste a job description.")
+    else:
+        resume_text = extract_text(uploaded_file)
+
+        if not resume_text.strip():
+            st.error("Could not extract text from the uploaded file. Try another file.")
+        else:
+            score, matched_keywords, missing_keywords = keyword_match_score(resume_text, jd_text)
+            resume_skills = extract_skills(resume_text)
+            jd_skills = extract_skills(jd_text)
+            missing_skills = sorted(list(set(jd_skills) - set(resume_skills)))
+            suggestions = check_resume_quality(resume_text)
+            top_keywords = get_top_keywords(resume_text, top_n=12)
+
+            # Score section
+            st.subheader("📊 Match Score")
+            st.progress(score / 100)
+            st.metric("Resume Match Score", f"{score}%")
+            st.caption("Score based on keyword overlap and skill similarity between resume and job description.")
+            st.info(score_label(score))
+
+            # Main analysis columns
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.subheader("✅ Matched Keywords")
+                if matched_keywords:
+                    st.write(", ".join(matched_keywords))
+                else:
+                    st.write("No major keyword matches found.")
+
+                st.subheader("🛠 Skills Found in Resume")
+                if resume_skills:
+                    st.write(", ".join(resume_skills))
+                else:
+                    st.write("No common technical skills detected.")
+
+            with c2:
+                st.subheader("❌ Missing Keywords")
+                if missing_keywords:
+                    st.write(", ".join(missing_keywords))
+                else:
+                    st.write("Great — no important keywords missing.")
+
+                st.subheader("🚨 Missing Skills from Job Description")
+                if missing_skills:
+                    st.write(", ".join(missing_skills))
+                else:
+                    st.write("Your resume covers the major skills from the job description.")
+
+            st.subheader("🧠 Resume Improvement Suggestions")
+            if suggestions:
+                for tip in suggestions:
+                    st.write(f"- {tip}")
+            else:
+                st.success("Your resume looks well-structured.")
+
+            st.subheader("📌 Top Resume Keywords")
+            if top_keywords:
+                for word, count in top_keywords:
+                    st.write(f"- **{word}** : {count}")
+            else:
+                st.write("Not enough text found for keyword analysis.")
+
+            st.subheader("📄 Extracted Resume Text Preview")
+            st.text_area("Preview", resume_text[:3000], height=250)
